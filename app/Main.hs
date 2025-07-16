@@ -11,12 +11,18 @@ import System.Environment
 import System.Exit
 import System.IO (BufferMode (NoBuffering), hPutStrLn, hSetBuffering, stderr, stdout)
 
-decodeBencodedValue :: ByteString -> ByteString
+data BencodedValue = BString String | BInteger Integer
+  deriving (Show, Eq)
+
+decodeBencodedValue :: ByteString -> BencodedValue
 decodeBencodedValue encodedValue
   | isDigit (B.head encodedValue) =
       case B.elemIndex ':' encodedValue of
-        Just colonIndex -> B.drop (colonIndex + 1) encodedValue
+        Just colonIndex -> BString (B.unpack (B.drop (colonIndex + 1) encodedValue))
         Nothing -> error "Invalid encoded value"
+  | (B.head encodedValue == 'i') && (B.last encodedValue == 'e') =
+      let numberPart = B.init (B.tail encodedValue)
+       in BInteger (read (B.unpack numberPart))
   | otherwise = error $ "Unhandled encoded value: " ++ B.unpack encodedValue
 
 main :: IO ()
@@ -35,7 +41,9 @@ main = do
     ("decode" : encodedValue : _) -> do
       hPutStrLn stderr "Logs from your program will appear here!"
       let decodedValue = decodeBencodedValue (B.pack encodedValue)
-      let jsonValue = encode (B.unpack decodedValue)
+      let jsonValue = case decodedValue of
+            BString str -> encode str
+            BInteger num -> encode num
       LB.putStr jsonValue
       putStr "\n"
 
