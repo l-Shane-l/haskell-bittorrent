@@ -28,13 +28,14 @@ byteStringToBString stringBS = BString (B.unpack stringBS)
 byteStringToInt :: ByteString -> Int
 byteStringToInt stringInt = read (B.unpack stringInt) :: Int
 
-decodeList :: ByteString -> [BencodedValue]
+-- The new, smarter decodeList
+decodeList :: ByteString -> ([BencodedValue], ByteString)
 decodeList bs
-  | B.null bs = []
+  | B.head bs == 'e' = ([], B.tail bs)
   | otherwise =
-      let (firstItem, remainder) = decodeBencodedValue bs
-          restOfTheItems = decodeList remainder
-       in firstItem : restOfTheItems
+      let (firstItem, restOfString) = decodeBencodedValue bs
+          (otherItems, finalRemainder) = decodeList restOfString
+       in (firstItem : otherItems, finalRemainder)
 
 decodeBencodedValue :: ByteString -> (BencodedValue, ByteString)
 decodeBencodedValue encodedValue
@@ -61,13 +62,8 @@ decodeBencodedValue encodedValue
            in
             (result, remainder)
   | B.head encodedValue == 'l' =
-      let
-        listContent = B.init $ B.tail encodedValue
-        decodedItems = decodeList listContent
-        result = BList decodedItems
-        remainder = B.empty
-       in
-        (result, remainder)
+      let (items, remainder) = decodeList (B.tail encodedValue)
+       in (BList items, remainder)
   | otherwise = error $ "Unhandled encoded value: " ++ B.unpack encodedValue
 
 main :: IO ()
