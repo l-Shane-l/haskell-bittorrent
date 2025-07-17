@@ -92,14 +92,30 @@ main = do
     exitWith (ExitFailure 1)
 
   case args of
-    -- If the first arg is "decode" and a second arg exists...
     ("decode" : encodedValue : _) -> do
       hPutStrLn stderr "Logs from your program will appear here!"
       let (decodedValue, _) = decodeBencodedValue (B.pack encodedValue)
       let jsonValue = encode decodedValue
       LB.putStr jsonValue
       putStr "\n"
+    -- "info" command with the correct logic
+    ("info" : filePath : _) -> do
+      contents <- B.readFile filePath
+      let (decodedValue, _) = decodeBencodedValue contents
+      case decodedValue of
+        BDict rootDict -> do
+          case lookup "announce" rootDict of
+            Just (BString url) -> putStrLn $ "Tracker URL: " ++ url
+            _ -> hPutStrLn stderr "Tracker URL not found."
 
-    -- For any other single command...
+          -- Use lookup on the dictionary to find the "info" dictionary
+          case lookup "info" rootDict of
+            Just (BDict infoDict) ->
+              -- Use lookup on the inner dictionary to find the value for the "length" key
+              case lookup "length" infoDict of
+                Just (BInteger len) -> putStrLn $ "Length: " ++ show len
+                _ -> hPutStrLn stderr "Length not found in info."
+            _ -> hPutStrLn stderr "Info dictionary not found."
+        _ -> hPutStrLn stderr "Error: Torrent file is not a valid dictionary." -- For any other single command...
     (command : _) ->
       putStrLn $ "Unknown command: " ++ command
