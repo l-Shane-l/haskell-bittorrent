@@ -2,7 +2,8 @@
 {-# LANGUAGE OverloadedStrings #-}
 
 import qualified Control.Monad
-import Data.Aeson (ToJSON (..), encode)
+import Data.Aeson (ToJSON (..), encode, object, (.=))
+import Data.Aeson.Key (fromString)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy as LB
@@ -11,13 +12,14 @@ import System.Environment
 import System.Exit
 import System.IO (BufferMode (NoBuffering), hPutStrLn, hSetBuffering, stderr, stdout)
 
-data BencodedValue = BString String | BInteger Integer | BList [BencodedValue]
+data BencodedValue = BString String | BInteger Integer | BList [BencodedValue] | BDict [(String, BencodedValue)]
   deriving (Show, Eq)
 
 instance ToJSON BencodedValue where
   toJSON (BString str) = toJSON str
   toJSON (BInteger num) = toJSON num
   toJSON (BList list) = toJSON list
+  toJSON (BDict dict) = object [(fromString k, toJSON v) | (k, v) <- dict]
 
 byteStringToBInteger :: ByteString -> BencodedValue
 byteStringToBInteger numberBS = BInteger (read (B.unpack numberBS))
@@ -36,6 +38,15 @@ decodeList bs
       let (firstItem, restOfString) = decodeBencodedValue bs
           (otherItems, finalRemainder) = decodeList restOfString
        in (firstItem : otherItems, finalRemainder)
+
+decodeDict :: ByteString -> ([(String, BencodedValue)], ByteString)
+decodeDict bs
+  | B.head bs == 'e' = ([], B.tail bs)
+  | otherwise =
+      let (BString key, restOfString_afterKey) = decodeBencodedValue bs
+          (value, restofString_afterValue) = decodeBencodedValue restOfString_afterKey
+          (otherPairs, finalRemainder) = decodeDict restofString_afterValue
+       in ((key, value) : otherPairs, finalRemainder)
 
 decodeBencodedValue :: ByteString -> (BencodedValue, ByteString)
 decodeBencodedValue encodedValue
@@ -64,6 +75,9 @@ decodeBencodedValue encodedValue
   | B.head encodedValue == 'l' =
       let (items, remainder) = decodeList (B.tail encodedValue)
        in (BList items, remainder)
+  | B.head encodedValue == 'd' =
+      let (pairs, remainder) = decodeDict (B.tail encodedValue)
+       in (BDict pairs, remainder)
   | otherwise = error $ "Unhandled encoded value: " ++ B.unpack encodedValue
 
 main :: IO ()
