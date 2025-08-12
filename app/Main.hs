@@ -2,15 +2,18 @@
 {-# LANGUAGE OverloadedStrings #-}
 
 import qualified Control.Monad
+import Crypto.Hash (Digest, SHA1 (..), hash)
 import Data.Aeson (ToJSON (..), encode, object, (.=))
 import Data.Aeson.Key (fromString)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy as LB
 import Data.Char (isDigit)
+import Data.List (sortOn)
 import System.Environment
 import System.Exit
 import System.IO (BufferMode (NoBuffering), hPutStrLn, hSetBuffering, stderr, stdout)
+import Text.Printf (printf)
 
 data BencodedValue = BString String | BInteger Integer | BList [BencodedValue] | BDict [(String, BencodedValue)]
   deriving (Show, Eq)
@@ -29,6 +32,24 @@ byteStringToBString stringBS = BString (B.unpack stringBS)
 
 byteStringToInt :: ByteString -> Int
 byteStringToInt stringInt = read (B.unpack stringInt) :: Int
+
+-- Encoding functions to convert BencodedValue back to bencode format
+encodeBencodedValue :: BencodedValue -> ByteString
+encodeBencodedValue (BString str) =
+  let bs = B.pack str
+      len = B.length bs
+   in B.concat [B.pack (show len), ":", bs]
+encodeBencodedValue (BInteger num) = B.concat ["i", B.pack (show num), "e"]
+encodeBencodedValue (BList list) =
+  B.concat $ ["l"] ++ map encodeBencodedValue list ++ ["e"]
+encodeBencodedValue (BDict dict) =
+  let sortedDict = sortOn fst dict -- Dictionary keys must be sorted in bencode
+      encodePair (k, v) = B.concat [encodeBencodedValue (BString k), encodeBencodedValue v]
+   in B.concat $ ["d"] ++ map encodePair sortedDict ++ ["e"]
+
+-- Function to convert ByteString to hex string
+bytesToHex :: ByteString -> String
+bytesToHex bs = B.unpack bs >>= \c -> printf "%02x" c
 
 -- The new, smarter decodeList
 decodeList :: ByteString -> ([BencodedValue], ByteString)
@@ -110,12 +131,21 @@ main = do
 
           -- Use lookup on the dictionary to find the "info" dictionary
           case lookup "info" rootDict of
-            Just (BDict infoDict) ->
-              -- Use lookup on the inner dictionary to find the value for the "length" key
-              case lookup "length" infoDict of
-                Just (BInteger len) -> putStrLn $ "Length: " ++ show len
-                _ -> hPutStrLn stderr "Length not found in info."
+            Just infoDict@(BDict _) -> do
+              -- Print the length if it exists
+              case infoDict of
+                BDict innerDict ->
+                  case lookup "length" innerDict of
+                    Just (BInteger len) -> putStrLn $ "Length: " ++ show len
+                    _ -> hPutStrLn stderr "Length not found in info."
+                _ -> return ()
+
+              -- Calculate and print the info hash
+              let encodedInfo = encodeBencodedValue infoDict
+              let infoHash = hash encodedInfo :: Digest SHA1
+              putStrLn $ "Info Hash: " ++ show infoHash
             _ -> hPutStrLn stderr "Info dictionary not found."
-        _ -> hPutStrLn stderr "Error: Torrent file is not a valid dictionary." -- For any other single command...
+        _ -> hPutStrLn stderr "Error: Torrent file is not a valid dictionary."
     (command : _) ->
       putStrLn $ "Unknown command: " ++ command
+
