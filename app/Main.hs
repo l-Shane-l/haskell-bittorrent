@@ -2,6 +2,7 @@
 {-# LANGUAGE OverloadedStrings #-}
 
 import qualified Control.Monad
+import Control.Monad.RWS (MonadState (put))
 import Crypto.Hash (Digest, SHA1 (..), hash)
 import Data.Aeson (ToJSON (..), encode, object, (.=))
 import Data.Aeson.Key (fromString)
@@ -15,20 +16,19 @@ import System.Exit
 import System.IO (BufferMode (NoBuffering), hPutStrLn, hSetBuffering, stderr, stdout)
 import Text.Printf (printf)
 
-data BencodedValue = BString String | BInteger Integer | BList [BencodedValue] | BDict [(String, BencodedValue)]
-  deriving (Show, Eq)
+data BencodedValue = BString ByteString | BInteger Integer | BList [BencodedValue] | BDict [(ByteString, BencodedValue)] deriving (Show, Eq)
 
 instance ToJSON BencodedValue where
-  toJSON (BString str) = toJSON str
+  toJSON (BString str) = toJSON (B.unpack str)
   toJSON (BInteger num) = toJSON num
   toJSON (BList list) = toJSON list
-  toJSON (BDict dict) = object [(fromString k, toJSON v) | (k, v) <- dict]
+  toJSON (BDict dict) = object [(fromString (B.unpack k), toJSON v) | (k, v) <- dict]
 
 byteStringToBInteger :: ByteString -> BencodedValue
 byteStringToBInteger numberBS = BInteger (read (B.unpack numberBS))
 
 byteStringToBString :: ByteString -> BencodedValue
-byteStringToBString stringBS = BString (B.unpack stringBS)
+byteStringToBString = BString
 
 byteStringToInt :: ByteString -> Int
 byteStringToInt stringInt = read (B.unpack stringInt) :: Int
@@ -36,7 +36,7 @@ byteStringToInt stringInt = read (B.unpack stringInt) :: Int
 -- Encoding functions to convert BencodedValue back to bencode format
 encodeBencodedValue :: BencodedValue -> ByteString
 encodeBencodedValue (BString str) =
-  let bs = B.pack str
+  let bs = str
       len = B.length bs
    in B.concat [B.pack (show len), ":", bs]
 encodeBencodedValue (BInteger num) = B.concat ["i", B.pack (show num), "e"]
@@ -60,7 +60,7 @@ decodeList bs
           (otherItems, finalRemainder) = decodeList restOfString
        in (firstItem : otherItems, finalRemainder)
 
-decodeDict :: ByteString -> ([(String, BencodedValue)], ByteString)
+decodeDict :: ByteString -> ([(ByteString, BencodedValue)], ByteString)
 decodeDict bs
   | B.head bs == 'e' = ([], B.tail bs)
   | otherwise =
@@ -126,26 +126,38 @@ main = do
       case decodedValue of
         BDict rootDict -> do
           case lookup "announce" rootDict of
-            Just (BString url) -> putStrLn $ "Tracker URL: " ++ url
+            Just (BString url) -> putStrLn $ "Tracker URL: " ++ B.unpack url
             _ -> hPutStrLn stderr "Tracker URL not found."
 
           -- Use lookup on the dictionary to find the "info" dictionary
           case lookup "info" rootDict of
-            Just infoDict@(BDict _) -> do
+            Just infoDict@(BDict innerDict) -> do
               -- Print the length if it exists
-              case infoDict of
-                BDict innerDict ->
-                  case lookup "length" innerDict of
-                    Just (BInteger len) -> putStrLn $ "Length: " ++ show len
-                    _ -> hPutStrLn stderr "Length not found in info."
-                _ -> return ()
+              case lookup "length" innerDict of
+                Just (BInteger len) -> putStrLn $ "Length: " ++ show len
+                _ -> hPutStrLn stderr "Length not found in info."
 
-              -- Calculate and print the info hash
               let encodedInfo = encodeBencodedValue infoDict
               let infoHash = hash encodedInfo :: Digest SHA1
               putStrLn $ "Info Hash: " ++ show infoHash
+              case lookup "piece length" innerDict of
+                Just (BInteger pLen) -> putStrLn $ "Piece Length: " ++ show pLen
+                _ -> hPutStrLn stderr "Piece length not found."
+              -- Calculate and print the info hash
+              case lookup "pieces" innerDict of
+                Just (BString rawString) -> do
+                  let pieces = chunksOf 20 rawString
+                  let hexPieces = fmap bytesToHex pieces
+                  putStrLn "Piece Hashes:"
+                  mapM_ putStrLn hexPieces
+                _ -> hPutStrLn stderr "Pieces not found."
             _ -> hPutStrLn stderr "Info dictionary not found."
         _ -> hPutStrLn stderr "Error: Torrent file is not a valid dictionary."
     (command : _) ->
       putStrLn $ "Unknown command: " ++ command
 
+chunksOf :: Int -> ByteString -> [ByteString]
+chunksOf chunkSize longString
+  | B.null longString = []
+  | B.length longString <= chunkSize = [longString]
+  | otherwise = B.take chunkSize longString : chunksOf chunkSize (B.drop chunkSize longString)
