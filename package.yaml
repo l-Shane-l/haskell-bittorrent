@@ -23,6 +23,7 @@ dependencies:
   - http-client
   - http-client-tls
   - http-types
+  - random
 
 library:
   source-dirs: src
@@ -32,6 +33,7 @@ library:
     - HttpReq
     - Torrent
     - Tracker
+    - Peer
 
 executables:
   codecrafters-bittorrent-exe:

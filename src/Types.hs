@@ -8,10 +8,10 @@ import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 
 -- Bencoded value type
-data BencodedValue 
-  = BString ByteString 
-  | BInteger Integer 
-  | BList [BencodedValue] 
+data BencodedValue
+  = BString ByteString
+  | BInteger Integer
+  | BList [BencodedValue]
   | BDict [(ByteString, BencodedValue)]
   deriving (Show, Eq)
 
@@ -21,14 +21,23 @@ instance ToJSON BencodedValue where
   toJSON (BList list) = toJSON list
   toJSON (BDict dict) = object [(fromString (B.unpack k), toJSON v) | (k, v) <- dict]
 
+data PeerProtocol = PeerProtocol
+  { lengthOfProtocol :: Int
+  , bittorrentProtocol :: ByteString
+  , reservedBytes :: ByteString
+  , infoHash :: ByteString
+  , peerId :: ByteString
+  }
+  deriving (Show)
+
 -- Parsed torrent file
 data TorrentInfo = TorrentInfo
   { torrentTrackerUrl :: String
   , torrentFileLength :: Integer
-  , torrentInfoHashRaw :: ByteString  -- Raw 20 bytes for tracker request
-  , torrentInfoHashHex :: String      -- Hex string for display
+  , torrentInfoHashRaw :: ByteString -- Raw 20 bytes for tracker request
+  , torrentInfoHashHex :: String -- Hex string for display
   , torrentPieceLength :: Integer
-  , torrentPieceHashes :: [String]    -- Hex encoded piece hashes
+  , torrentPieceHashes :: [String] -- Hex encoded piece hashes
   }
   deriving (Show)
 

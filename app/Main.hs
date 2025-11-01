@@ -12,6 +12,7 @@ import System.IO (BufferMode (NoBuffering), hPutStrLn, hSetBuffering, stderr, st
 -- Import our modules
 import Bencode
 import HttpReq
+import Peer
 import Torrent
 import Tracker
 import Types
@@ -46,7 +47,22 @@ main = do
           putStrLn $ "Piece Length: " ++ show (torrentPieceLength torrent)
           putStrLn "Piece Hashes:"
           mapM_ putStrLn (torrentPieceHashes torrent)
-    
+    ("handshake" : filePath : peerAddr : _) -> do
+      contents <- B.readFile filePath
+      case parseTorrentFile contents of
+        Left err -> hPutStrLn stderr $ "Error parsing torrent: " ++ err
+        Right torrent -> do
+          -- Parse peer address (format: ip:port)
+          let (host, portStr) = break (== ':') peerAddr
+          let port = drop 1 portStr -- Remove the ':' character
+
+          -- Perform handshake
+          result <- performHandshake host port (torrentInfoHashRaw torrent)
+
+          case result of
+            Nothing -> hPutStrLn stderr "Handshake failed"
+            Just handshake -> do
+              putStrLn $ "Peer ID: " ++ toHex (hsPeerId handshake)
     -- "peers" command - discover peers from tracker
     ("peers" : filePath : _) -> do
       contents <- B.readFile filePath
@@ -54,29 +70,30 @@ main = do
         Left err -> hPutStrLn stderr $ "Error parsing torrent: " ++ err
         Right torrent -> do
           -- Build tracker request
-          let trackerReq = TrackerRequest
-                { reqInfoHash = torrentInfoHashRaw torrent
-                , reqPeerId = "00112233445566778899"  -- 20-byte peer ID
-                , reqPort = 6881
-                , reqUploaded = 0
-                , reqDownloaded = 0
-                , reqLeft = torrentFileLength torrent
-                , reqCompact = 1
-                }
-          
+          let trackerReq =
+                TrackerRequest
+                  { reqInfoHash = torrentInfoHashRaw torrent
+                  , reqPeerId = "00112233445566778899" -- 20-byte peer ID
+                  , reqPort = 6881
+                  , reqUploaded = 0
+                  , reqDownloaded = 0
+                  , reqLeft = torrentFileLength torrent
+                  , reqCompact = 1
+                  }
+
           -- Build full tracker URL with query params
           let trackerUrl = buildTrackerUrl (torrentTrackerUrl torrent) trackerReq
-          
+
           -- Make HTTP request to tracker
           responseBody <- makeHttpRequest trackerUrl
-          
+
           -- Parse bencoded response
           let responseBS = LB.toStrict responseBody
           let (decodedResponse, _) = decodeBencodedValue responseBS
-          
+
           -- Extract peers from response
           case decodedResponse of
-            BDict respDict -> 
+            BDict respDict ->
               case lookup "peers" respDict of
                 Just (BString peersData) -> do
                   let peerList = parsePeers peersData
