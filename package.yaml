@@ -19,11 +19,26 @@ dependencies:
   - parsec
   - attoparsec
   - cryptonite
+  - memory
+  - http-client
+  - http-client-tls
+  - http-types
+
+library:
+  source-dirs: src
+  exposed-modules:
+    - Types
+    - Bencode
+    - HttpReq
+    - Torrent
+    - Tracker
 
 executables:
   codecrafters-bittorrent-exe:
     main: Main.hs
     source-dirs: app
+    dependencies:
+      - codecrafters-bittorrent
     ghc-options:
       - -threaded
       - -rtsopts

@@ -2,104 +2,19 @@
 {-# LANGUAGE OverloadedStrings #-}
 
 import qualified Control.Monad
-import Control.Monad.RWS (MonadState (put))
-import Crypto.Hash (Digest, SHA1 (..), hash)
-import Data.Aeson (ToJSON (..), encode, object, (.=))
-import Data.Aeson.Key (fromString)
-import Data.ByteString.Char8 (ByteString)
+import Data.Aeson (encode)
 import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy as LB
-import Data.Char (isDigit)
-import Data.List (sortOn)
 import System.Environment
 import System.Exit
 import System.IO (BufferMode (NoBuffering), hPutStrLn, hSetBuffering, stderr, stdout)
-import Text.Printf (printf)
 
-data BencodedValue = BString ByteString | BInteger Integer | BList [BencodedValue] | BDict [(ByteString, BencodedValue)] deriving (Show, Eq)
-
-instance ToJSON BencodedValue where
-  toJSON (BString str) = toJSON (B.unpack str)
-  toJSON (BInteger num) = toJSON num
-  toJSON (BList list) = toJSON list
-  toJSON (BDict dict) = object [(fromString (B.unpack k), toJSON v) | (k, v) <- dict]
-
-byteStringToBInteger :: ByteString -> BencodedValue
-byteStringToBInteger numberBS = BInteger (read (B.unpack numberBS))
-
-byteStringToBString :: ByteString -> BencodedValue
-byteStringToBString = BString
-
-byteStringToInt :: ByteString -> Int
-byteStringToInt stringInt = read (B.unpack stringInt) :: Int
-
--- Encoding functions to convert BencodedValue back to bencode format
-encodeBencodedValue :: BencodedValue -> ByteString
-encodeBencodedValue (BString str) =
-  let bs = str
-      len = B.length bs
-   in B.concat [B.pack (show len), ":", bs]
-encodeBencodedValue (BInteger num) = B.concat ["i", B.pack (show num), "e"]
-encodeBencodedValue (BList list) =
-  B.concat $ ["l"] ++ map encodeBencodedValue list ++ ["e"]
-encodeBencodedValue (BDict dict) =
-  let sortedDict = sortOn fst dict -- Dictionary keys must be sorted in bencode
-      encodePair (k, v) = B.concat [encodeBencodedValue (BString k), encodeBencodedValue v]
-   in B.concat $ ["d"] ++ map encodePair sortedDict ++ ["e"]
-
--- Function to convert ByteString to hex string
-bytesToHex :: ByteString -> String
-bytesToHex bs = B.unpack bs >>= \c -> printf "%02x" c
-
--- The new, smarter decodeList
-decodeList :: ByteString -> ([BencodedValue], ByteString)
-decodeList bs
-  | B.head bs == 'e' = ([], B.tail bs)
-  | otherwise =
-      let (firstItem, restOfString) = decodeBencodedValue bs
-          (otherItems, finalRemainder) = decodeList restOfString
-       in (firstItem : otherItems, finalRemainder)
-
-decodeDict :: ByteString -> ([(ByteString, BencodedValue)], ByteString)
-decodeDict bs
-  | B.head bs == 'e' = ([], B.tail bs)
-  | otherwise =
-      let (BString key, restOfString_afterKey) = decodeBencodedValue bs
-          (value, restofString_afterValue) = decodeBencodedValue restOfString_afterKey
-          (otherPairs, finalRemainder) = decodeDict restofString_afterValue
-       in ((key, value) : otherPairs, finalRemainder)
-
-decodeBencodedValue :: ByteString -> (BencodedValue, ByteString)
-decodeBencodedValue encodedValue
-  | isDigit (B.head encodedValue) =
-      case B.elemIndex ':' encodedValue of
-        Just colonIndex ->
-          let
-            lenStr = B.take colonIndex encodedValue
-            len = byteStringToInt lenStr
-            afterColon = B.drop (colonIndex + 1) encodedValue
-            content = B.take len afterColon
-            remainder = B.drop len afterColon
-           in
-            (byteStringToBString content, remainder)
-        Nothing -> error "Invalid encoded value"
-  | B.head encodedValue == 'i' =
-      case B.elemIndex 'e' encodedValue of
-        Nothing -> error "Invalid bencoded integer: missing 'e'"
-        Just eIndex ->
-          let
-            (integerToken, remainder) = B.splitAt (eIndex + 1) encodedValue
-            numberPart = B.init (B.tail integerToken)
-            result = byteStringToBInteger numberPart
-           in
-            (result, remainder)
-  | B.head encodedValue == 'l' =
-      let (items, remainder) = decodeList (B.tail encodedValue)
-       in (BList items, remainder)
-  | B.head encodedValue == 'd' =
-      let (pairs, remainder) = decodeDict (B.tail encodedValue)
-       in (BDict pairs, remainder)
-  | otherwise = error $ "Unhandled encoded value: " ++ B.unpack encodedValue
+-- Import our modules
+import Bencode
+import HttpReq
+import Torrent
+import Tracker
+import Types
 
 main :: IO ()
 main = do
@@ -119,45 +34,54 @@ main = do
       let jsonValue = encode decodedValue
       LB.putStr jsonValue
       putStr "\n"
-    -- "info" command with the correct logic
+    -- "info" command - display torrent file information
     ("info" : filePath : _) -> do
       contents <- B.readFile filePath
-      let (decodedValue, _) = decodeBencodedValue contents
-      case decodedValue of
-        BDict rootDict -> do
-          case lookup "announce" rootDict of
-            Just (BString url) -> putStrLn $ "Tracker URL: " ++ B.unpack url
-            _ -> hPutStrLn stderr "Tracker URL not found."
-
-          -- Use lookup on the dictionary to find the "info" dictionary
-          case lookup "info" rootDict of
-            Just infoDict@(BDict innerDict) -> do
-              -- Print the length if it exists
-              case lookup "length" innerDict of
-                Just (BInteger len) -> putStrLn $ "Length: " ++ show len
-                _ -> hPutStrLn stderr "Length not found in info."
-
-              let encodedInfo = encodeBencodedValue infoDict
-              let infoHash = hash encodedInfo :: Digest SHA1
-              putStrLn $ "Info Hash: " ++ show infoHash
-              case lookup "piece length" innerDict of
-                Just (BInteger pLen) -> putStrLn $ "Piece Length: " ++ show pLen
-                _ -> hPutStrLn stderr "Piece length not found."
-              -- Calculate and print the info hash
-              case lookup "pieces" innerDict of
-                Just (BString rawString) -> do
-                  let pieces = chunksOf 20 rawString
-                  let hexPieces = fmap bytesToHex pieces
-                  putStrLn "Piece Hashes:"
-                  mapM_ putStrLn hexPieces
-                _ -> hPutStrLn stderr "Pieces not found."
-            _ -> hPutStrLn stderr "Info dictionary not found."
-        _ -> hPutStrLn stderr "Error: Torrent file is not a valid dictionary."
+      case parseTorrentFile contents of
+        Left err -> hPutStrLn stderr $ "Error parsing torrent: " ++ err
+        Right torrent -> do
+          putStrLn $ "Tracker URL: " ++ torrentTrackerUrl torrent
+          putStrLn $ "Length: " ++ show (torrentFileLength torrent)
+          putStrLn $ "Info Hash: " ++ torrentInfoHashHex torrent
+          putStrLn $ "Piece Length: " ++ show (torrentPieceLength torrent)
+          putStrLn "Piece Hashes:"
+          mapM_ putStrLn (torrentPieceHashes torrent)
+    
+    -- "peers" command - discover peers from tracker
+    ("peers" : filePath : _) -> do
+      contents <- B.readFile filePath
+      case parseTorrentFile contents of
+        Left err -> hPutStrLn stderr $ "Error parsing torrent: " ++ err
+        Right torrent -> do
+          -- Build tracker request
+          let trackerReq = TrackerRequest
+                { reqInfoHash = torrentInfoHashRaw torrent
+                , reqPeerId = "00112233445566778899"  -- 20-byte peer ID
+                , reqPort = 6881
+                , reqUploaded = 0
+                , reqDownloaded = 0
+                , reqLeft = torrentFileLength torrent
+                , reqCompact = 1
+                }
+          
+          -- Build full tracker URL with query params
+          let trackerUrl = buildTrackerUrl (torrentTrackerUrl torrent) trackerReq
+          
+          -- Make HTTP request to tracker
+          responseBody <- makeHttpRequest trackerUrl
+          
+          -- Parse bencoded response
+          let responseBS = LB.toStrict responseBody
+          let (decodedResponse, _) = decodeBencodedValue responseBS
+          
+          -- Extract peers from response
+          case decodedResponse of
+            BDict respDict -> 
+              case lookup "peers" respDict of
+                Just (BString peersData) -> do
+                  let peerList = parsePeers peersData
+                  mapM_ putStrLn peerList
+                _ -> hPutStrLn stderr "Peers not found in tracker response"
+            _ -> hPutStrLn stderr "Invalid tracker response"
     (command : _) ->
       putStrLn $ "Unknown command: " ++ command
-
-chunksOf :: Int -> ByteString -> [ByteString]
-chunksOf chunkSize longString
-  | B.null longString = []
-  | B.length longString <= chunkSize = [longString]
-  | otherwise = B.take chunkSize longString : chunksOf chunkSize (B.drop chunkSize longString)
